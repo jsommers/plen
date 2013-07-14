@@ -93,7 +93,7 @@ public:
 
     *outstream << thisname << " rtts {";
     for (auto it = rtts.begin(); it != rtts.end(); ++it) {
-      *outstream << it->first << ":" << it->second << ", ";
+      *outstream << "'" << it->first << "':" << it->second << ", ";
     }
 
     *outstream << "}\n";

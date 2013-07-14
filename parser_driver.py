@@ -7,6 +7,7 @@ import re
 import optparse
 import subprocess
 import json
+from collections import defaultdict
 
 skitterv1_range =  ( (1998,7), (2004,6) )
 skitterv2_range =  ( (2004,6), (2008,2) )
@@ -37,10 +38,13 @@ def avgvar_list(xlist):
   var = (( xsqsum * n ) - ( xsum ** 2.0 )) / (n * (n - 1))
   return avg,math.sqrt(var),median(xlist)
 
-def avgvar_dict(xdict):
+def avgvar_dict(xdict, floatit=False):
   xlist = []
   for val,count in xdict.iteritems():
-    xlist.extend([val]*count)
+    if floatit:
+        xlist.extend([float(val)]*count)
+    else:
+        xlist.extend([val]*count)
   return avgvar_list(xlist)
 
 def get_skitter_v1(year, month):
@@ -48,9 +52,9 @@ def get_skitter_v1(year, month):
     if date_out_of_range(year, month, skitterv1_range):
         return names
     try:
-        for name in os.listdir('skitter_data/{:04d}/{:02d}'.format(year, month)):
+        for name in os.listdir('../skitter_data/{:04d}/{:02d}'.format(year, month)):
             if re.match(r'^[a-z0-9-]+\.\d{8}\.arts\.gz$', name):
-                names.append('skitter_data/{:04d}/{:02d}/{}'.format(year, month, name))
+                names.append('../skitter_data/{:04d}/{:02d}/{}'.format(year, month, name))
     except OSError,e:
         pass
 
@@ -62,9 +66,9 @@ def get_skitter_v2(year, month):
         return names
 
     try:
-        for name in os.listdir('skitter_data/{:04d}/{:02d}'.format(year, month)):
+        for name in os.listdir('../skitter_data/{:04d}/{:02d}'.format(year, month)):
             if re.match(r'^l006\.[a-z0-9-]+\.\d{8}_\d{3}\.arts\.gz$', name):
-                names.append('skitter_data/{:04d}/{:02d}/{}'.format(year, month, name))
+                names.append('../skitter_data/{:04d}/{:02d}/{}'.format(year, month, name))
     except OSError,e:
         pass
         
@@ -78,9 +82,9 @@ def get_ark(year, month):
 
     for team in [1,2,3]:
         try:
-            for name in os.listdir('data/team{}/{:04d}/{:02d}'.format(team, year, month)):
+            for name in os.listdir('../data/team{}/{:04d}/{:02d}'.format(team, year, month)):
                 if re.match(r'^daily\.l7\.t\d\.c\d{6}\.\d{8}\.[a-z0-9-]+\.warts\.gz$', name):
-                    names.append('data/team{}/{:04d}/{:02d}/{}'.format(team, year, month, name))
+                    names.append('../data/team{}/{:04d}/{:02d}/{}'.format(team, year, month, name))
         except OSError, e:
             pass
 
@@ -117,10 +121,10 @@ def date_out_of_range(year, month, daterange):
 def get_routeviews(year, month):
     if date_out_of_range(year, month, routeviews_range):
         return ''
-    for fname in os.listdir('routeviews/{:04d}/{:02d}'.format(year, month)):
+    for fname in os.listdir('../routeviews/{:04d}/{:02d}'.format(year, month)):
         if 'pfx2as.gz' in fname:
             # just looking for one particular file
-            return 'routeviews/{:04d}/{:02d}/{}'.format(year, month, fname)
+            return '../routeviews/{:04d}/{:02d}/{}'.format(year, month, fname)
     return ''
 
 
@@ -136,11 +140,11 @@ def post_process(outbase, y, m, input_file):
         masterdict = dictpair[xtype]
         for key,val in xdict.iteritems():
             masterdict[key] += val
-    outfile = open('outbase_{:02d}{:04d}_full.txt', 'w')
+    outfile = open('{}_{:04d}{:02d}_full.txt'.format(outbase, y, m), 'w')
     print >>outfile,json.dumps(dictpair['hops'])
     print >>outfile,json.dumps(dictpair['rtts'])
     print >>outfile,avgvar_dict(dictpair['hops'])
-    print >>outfile,avgvar_dict(dictpair['rtts'])
+    print >>outfile,avgvar_dict(dictpair['rtts'], floatit=True)
     outfile.close()
 
 
@@ -163,11 +167,20 @@ def main():
             filelist = get_files(year, month)
             routeviews = get_routeviews(year, month)
 
+            remaining = len(filelist)
+            print "Doing",outfile_name,">>>",
             for xfile,xtype in filelist:
                 cmdline = 'gzip -dc {} | ./topodata_parse2 -t {} -r {} -o {} -n {}'.format(xfile, xtype, routeviews, outfile_name, xfile)
+                print remaining,
+                sys.stdout.flush()
                 p = subprocess.Popen(cmdline, shell=True)
                 pid, status = os.waitpid(p.pid, 0)
+                remaining -= 1
+            print ">>> postprocessing...",
+            sys.stdout.flush()
 
             post_process(options.outbase, year, month, outfile_name)
+            print "done"
+            sys.stdout.flush()
 
 main()
