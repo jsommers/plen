@@ -45,7 +45,12 @@ private:
   string outname;
 
 public:
-  TrStats(const string &scenario_name, const string &outfile_name) : thisname{scenario_name}, outname{outfile_name} {}
+  TrStats(const string &scenario_name, const string &outfile_name) {
+    thisname = scenario_name;
+    outname = outfile_name;
+    hops.clear();
+    rtts.clear();
+  }
 
   void add_troute(int hopcount, const struct timeval &rtt) {
     auto hopit = hops.find(hopcount);
