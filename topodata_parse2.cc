@@ -602,6 +602,7 @@ static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, Tr
   printf("\n");
 #endif
 
+  bool nullhops = false;
   if (trace->hop_count > 0) {
     scamper_trace_hop_t *hop = trace->hops[trace->hop_count - 1];
     if (hop != NULL) {
@@ -611,6 +612,8 @@ static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, Tr
       if (checker->check_dest(lasthopaddr, dstip)) {
         stats->add_troute(trace->hop_count, hop->hop_rtt);
       }
+    } else {
+      nullhops = true;
     }
   }
 
@@ -667,7 +670,14 @@ static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, Tr
   printf("\n");
 #endif
 
-  scamper_trace_free(trace);
+  if (!nullhops) {
+    try {
+      scamper_trace_free(trace);
+    } catch (...) {
+      cerr << "exception while freeing trace" << endl;
+    }
+  }
+
   return;
 }
 
