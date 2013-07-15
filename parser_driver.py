@@ -170,7 +170,10 @@ def main():
             remaining = len(filelist)
             print "Doing",outfile_name,">>>",
             for xfile,xtype in filelist:
-                cmdline = 'gzip -dc {} | ./topodata_parse2 -t {} -r {} -o {} -n {}'.format(xfile, xtype, routeviews, outfile_name, xfile)
+                if routeviews:
+                    cmdline = 'gzip -dc {} | ./topodata_parse2 -t {} -r {} -o {} -n {}'.format(xfile, xtype, routeviews, outfile_name, xfile)
+                else:
+                    cmdline = 'gzip -dc {} | ./topodata_parse2 -t {} -o {} -n {}'.format(xfile, xtype, outfile_name, xfile)
                 print remaining,
                 sys.stdout.flush()
                 p = subprocess.Popen(cmdline, shell=True)

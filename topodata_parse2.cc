@@ -61,7 +61,7 @@ public:
     }
 
     ostringstream ostr;
-    ostr << rtt.tv_sec << '.' << setw(4) << setfill('0') << rtt.tv_usec / 10000;
+    ostr << rtt.tv_sec << '.' << setw(4) << setfill('0') << (rtt.tv_usec / 100);
     string rttstr = ostr.str();
 
     auto rttit = rtts.find(rttstr);
