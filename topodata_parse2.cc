@@ -65,20 +65,22 @@ public:
     ++included;
 
     int i = 1;
-    while ((aspath[i] == aspath[0] || aspath[i] == "?") && i < aspath.size()) {
+    while (i < aspath.size() && (aspath[i] == aspath[0] || aspath[i] == "?")) {
       ++i;
     }
 
     int lastidx = aspath.size() - 1;
     int j = lastidx - 1;
-    while ((aspath[j] == aspath[lastidx] || aspath[j] == "?") && j != 0) {
+    while (j != 0 && (aspath[j] == aspath[lastidx] || aspath[j] == "?")) {
       --j;
     }
 
     // cout << hopcount << ' ';
     int begintrim = i - 1; 
     int endtrim = lastidx - j - 1;
-    hopcount = hopcount - begintrim - endtrim;
+    if (!(i == aspath.size() || j == 0)) {
+      hopcount = hopcount - begintrim - endtrim;
+    }
 
     // cout << begintrim << ' ' << endtrim << ' ' << hopcount << " aspath: ";
     //for (auto asn : aspath) {
