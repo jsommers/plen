@@ -41,8 +41,11 @@ class TrStats {
 private:
   map<string, int> rtts;
   map<int, int> hops;
+  map<int, int> aspathlens;
   string thisname;
   string outname;
+  int filtered;
+  int included;
 
 public:
   TrStats(const string &scenario_name, const string &outfile_name) {
@@ -50,9 +53,53 @@ public:
     outname = outfile_name;
     hops.clear();
     rtts.clear();
+    aspathlens.clear();
+    filtered = 0;
+    included = 0;
   }
 
-  void add_troute(int hopcount, const struct timeval &rtt) {
+  void incr_filtered() { ++filtered; }
+
+
+  void add_troute(int hopcount, const struct timeval &rtt, const vector<string> &aspath) {
+    ++included;
+
+    int i = 1;
+    while ((aspath[i] == aspath[0] || aspath[i] == "?") && i < aspath.size()) {
+      ++i;
+    }
+
+    int lastidx = aspath.size() - 1;
+    int j = lastidx - 1;
+    while ((aspath[j] == aspath[lastidx] || aspath[j] == "?") && j != 0) {
+      --j;
+    }
+
+    // cout << hopcount << ' ';
+    int begintrim = i - 1; 
+    int endtrim = lastidx - j - 1;
+    hopcount = hopcount - begintrim - endtrim;
+
+    // cout << begintrim << ' ' << endtrim << ' ' << hopcount << " aspath: ";
+    //for (auto asn : aspath) {
+    //  cout << asn << ' ';
+    //}
+    //cout << endl;
+
+    map<string,int> ases;
+    for (auto asn : aspath) {
+      if (asn != "?") {
+        ases[asn] = 1; 
+      }
+    }
+    int aspathlength = ases.size();
+    auto asnit = aspathlens.find(aspathlength);
+    if (asnit == aspathlens.end()) {
+      aspathlens[aspathlength] = 1;
+    } else {
+      aspathlens[aspathlength] = 1 + asnit->second;
+    }
+
     auto hopit = hops.find(hopcount);
     if (hopit == hops.end()) {
       hops[hopcount] = 1;
@@ -88,15 +135,21 @@ public:
     for (auto it = hops.begin(); it != hops.end(); ++it) {
       *outstream << it->first << ":" << it->second << ", ";
     }
-
     *outstream << "}\n";
 
     *outstream << thisname << " rtts {";
     for (auto it = rtts.begin(); it != rtts.end(); ++it) {
       *outstream << "'" << it->first << "':" << it->second << ", ";
     }
-
     *outstream << "}\n";
+
+    *outstream << thisname << " aspaths {";
+    for (auto it = aspathlens.begin(); it != aspathlens.end(); ++it) {
+      *outstream << it->first << ":" << it->second << ", ";
+    }
+    *outstream << "}\n";
+
+    *outstream << "# " << thisname << " included " << included << " filtered " << filtered << endl;
 
     if (!usestdout) {
       delete outstream;
@@ -107,6 +160,8 @@ public:
 class DestinationChecker {
 public:
   virtual bool check_dest(const char *trace_last_ip, const char *destip) = 0;
+  virtual bool same_network(const char *, const char *) = 0;
+  virtual string get_asn(const char *) = 0;
 };
 
 
@@ -161,6 +216,21 @@ public:
     Clear_Patricia(ptree, reinterpret_cast<void_fn_t>(dealloc_string)); 
   }
 
+  bool same_network(const char *srcip, const char *dstip) {
+    const char *asn1 = ip_to_asn(srcip);
+    const char *asn2 = ip_to_asn(dstip);
+    return (asn1 != NULL && asn2 != NULL && strcmp(asn1, asn2) == 0);
+  }
+
+  string get_asn(const char *ipaddr) {
+    string s = "?";
+    char *asnstr = ip_to_asn(ipaddr);
+    if (asnstr != NULL) {
+      s = asnstr;
+    }
+    return s;
+  }
+
   bool check_dest(const char *trace_last_ip, const char *destip) {
     const char *asn1 = ip_to_asn(trace_last_ip);
     const char *asn2 = ip_to_asn(destip);
@@ -170,6 +240,19 @@ public:
 
 class ClassfulDestinationChecker : public DestinationChecker {
 public:
+  bool same_network(const char *srcip, const char *dstip) {
+    struct in_addr srcinaddr, dstinaddr;
+    inet_aton(srcip, &srcinaddr);
+    inet_aton(dstip, &dstinaddr);
+    return ((static_cast<uint32_t>(srcinaddr.s_addr) & 0xffffff00) ==
+            (static_cast<uint32_t>(dstinaddr.s_addr) & 0xffffff00));
+  }
+
+  string get_asn(const char *ipaddr) {
+    string s = "?";
+    return s;
+  }
+
   bool check_dest(const char *trace_last_ip, const char *destip) {
     struct in_addr destinaddr, lastinaddr;
     inet_aton(trace_last_ip, &lastinaddr);
@@ -431,6 +514,25 @@ static void dump_trace_hop(scamper_trace_hop_t *hop) {
 }
 #endif
 
+static vector<string> get_aspath(scamper_trace_t *trace, DestinationChecker *checker) {
+  vector<string> aspath;
+
+  // cout << trace->hop_count << " ASPath: ";
+  for (int i = 0; i < trace->hop_count; ++i) {
+    scamper_trace_hop_t *hop = trace->hops[i];
+    if (hop != NULL) {
+      char addrstr[128];
+      scamper_addr_tostr(hop->hop_addr, addrstr, sizeof(addrstr));
+      string asn = checker->get_asn(addrstr);
+      // cout << addrstr << '/' << asn << '/' << static_cast<int>(hop->hop_probe_ttl) << ' ';
+      aspath.push_back(asn);
+    }
+  }
+  // cout << endl;
+
+  return aspath;
+}
+
 static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, TrStats *stats) {
 #if 0
   scamper_trace_pmtud_t *pmtud;
@@ -440,6 +542,7 @@ static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, Tr
   char buf[256];
 #endif
 
+
   char srcip[128];
   char dstip[128];
   if(trace->src != NULL) {
@@ -447,6 +550,11 @@ static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, Tr
   }
 
   scamper_addr_tostr(trace->dst, dstip, sizeof(dstip));
+
+  if (checker->same_network(srcip, dstip)) {
+    stats->incr_filtered();
+    return;
+  }
 
 #if 0
   dump_list_summary(trace->list);
@@ -610,9 +718,13 @@ static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, Tr
       scamper_addr_tostr(hop->hop_addr, lasthopaddr, sizeof(lasthopaddr));
 
       if (checker->check_dest(lasthopaddr, dstip)) {
-        stats->add_troute(trace->hop_count, hop->hop_rtt);
+        vector<string> aspath = get_aspath(trace, checker);
+        stats->add_troute(trace->hop_count, hop->hop_rtt, aspath);
+      } else {
+        stats->incr_filtered();
       }
     } else {
+      stats->incr_filtered();
       nullhops = true;
     }
   }

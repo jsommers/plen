@@ -130,8 +130,11 @@ def get_routeviews(year, month):
 
 def post_process(outbase, y, m, input_file):
     infile = open(input_file)
-    dictpair = { 'hops':defaultdict(int), 'rtts':defaultdict(int) }
+    dictpair = { 'hops':defaultdict(int), 'rtts':defaultdict(int), 'aspaths':defaultdict(int) }
     for line in infile:
+        if line[0] == '#':
+            continue
+
         space1 = line.find(' ')
         space2 = line.find(' ', space1+1)
         name = line[:space1]
@@ -143,8 +146,10 @@ def post_process(outbase, y, m, input_file):
     outfile = open('{}_{:04d}{:02d}_full.txt'.format(outbase, y, m), 'w')
     print >>outfile,json.dumps(dictpair['hops'])
     print >>outfile,json.dumps(dictpair['rtts'])
+    print >>outfile,json.dumps(dictpair['aspaths'])
     print >>outfile,avgvar_dict(dictpair['hops'])
     print >>outfile,avgvar_dict(dictpair['rtts'], floatit=True)
+    print >>outfile,avgvar_dict(dictpair['aspaths'])
     outfile.close()
 
 
