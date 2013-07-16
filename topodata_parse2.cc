@@ -64,22 +64,29 @@ public:
   void add_troute(int hopcount, const struct timeval &rtt, const vector<string> &aspath) {
     ++included;
 
+    // path trimming at each endpoint...
     int i = 1;
-    while (i < aspath.size() && (aspath[i] == aspath[0] || aspath[i] == "?")) {
+    while (i < aspath.size() && aspath[i] == aspath[0]) {
       ++i;
     }
 
     int lastidx = aspath.size() - 1;
-    int j = lastidx - 1;
-    while (j != 0 && (aspath[j] == aspath[lastidx] || aspath[j] == "?")) {
-      --j;
+    int j = 1;
+    while ((lastidx - j > 0) && aspath[lastidx - j] == aspath[lastidx]) {
+      ++j;
     }
 
     // cout << hopcount << ' ';
     int begintrim = i - 1; 
-    int endtrim = lastidx - j - 1;
-    if (!(i == aspath.size() || j == 0)) {
-      hopcount = hopcount - begintrim - endtrim;
+    int endtrim = j - 1;
+
+    int filtered_count = hopcount - (j-1) - (i-1);
+    if (filtered_count <= 1) {
+        cout << "filtering check: " << hopcount << ' ' << begintrim << ' ' << endtrim << ' ' << filtered_count << " >>>";
+        for (string asn : aspath) {
+            cout << asn << ' ';
+        }
+        cout << endl;
     }
 
     // cout << begintrim << ' ' << endtrim << ' ' << hopcount << " aspath: ";
@@ -719,7 +726,7 @@ static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, Tr
       char lasthopaddr[128];
       scamper_addr_tostr(hop->hop_addr, lasthopaddr, sizeof(lasthopaddr));
 
-      if (checker->check_dest(lasthopaddr, dstip)) {
+      if (checker->check_dest(lasthopaddr, dstip) && trace->hop_count < 64) {
         vector<string> aspath = get_aspath(trace, checker);
         stats->add_troute(trace->hop_count, hop->hop_rtt, aspath);
       } else {
