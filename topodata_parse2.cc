@@ -82,11 +82,17 @@ public:
 
     int filtered_count = hopcount - (j-1) - (i-1);
     if (filtered_count <= 1) {
+        // pass: don't update hopcount with filtered_count;
+        // normally just true if we don't have routeviews prefix->asn data
+#if 0
         cout << "filtering check: " << hopcount << ' ' << begintrim << ' ' << endtrim << ' ' << filtered_count << " >>>";
         for (string asn : aspath) {
             cout << asn << ' ';
         }
         cout << endl;
+#endif
+    } else {
+        hopcount - filtered_count;
     }
 
     // cout << begintrim << ' ' << endtrim << ' ' << hopcount << " aspath: ";
