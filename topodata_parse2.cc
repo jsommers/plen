@@ -61,7 +61,7 @@ public:
   void incr_filtered() { ++filtered; }
 
 
-  void add_troute(int hopcount, const struct timeval &rtt, const vector<string> &aspath) {
+  void add_troute(int hopcount, const vector<struct timeval> &rttvec, const vector<string> &aspath) {
     ++included;
 
     // path trimming at each endpoint...
@@ -88,6 +88,7 @@ public:
         }
         cout << endl;
     }
+
 
     // cout << begintrim << ' ' << endtrim << ' ' << hopcount << " aspath: ";
     //for (auto asn : aspath) {
@@ -116,10 +117,11 @@ public:
       hops[hopcount] = 1 + hopit->second;
     }
 
+
+    struct timeval rtt = rttvec[lastidx - (j-1)];
     ostringstream ostr;
     ostr << rtt.tv_sec << '.' << setw(4) << setfill('0') << (rtt.tv_usec / 100);
     string rttstr = ostr.str();
-
     auto rttit = rtts.find(rttstr);
     if (rttit == rtts.end()) {
       rtts[rttstr] = 1;
@@ -523,6 +525,19 @@ static void dump_trace_hop(scamper_trace_hop_t *hop) {
 }
 #endif
 
+
+static vector<struct timeval> extract_rtts(scamper_trace_t *trace) {
+  vector<struct timeval> rttvec;
+
+  for (int i = 0; i < trace->hop_count; ++i) {
+    scamper_trace_hop_t *hop = trace->hops[i];
+    if (hop != NULL) {
+      rttvec.push_back(hop->hop_rtt);
+    }
+  }
+  return rttvec;
+}
+
 static vector<string> get_aspath(scamper_trace_t *trace, DestinationChecker *checker) {
   vector<string> aspath;
 
@@ -728,7 +743,8 @@ static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, Tr
 
       if (checker->check_dest(lasthopaddr, dstip) && trace->hop_count < 64) {
         vector<string> aspath = get_aspath(trace, checker);
-        stats->add_troute(trace->hop_count, hop->hop_rtt, aspath);
+        vector<struct timeval> rttvec = extract_rtts(trace);
+        stats->add_troute(trace->hop_count, rttvec, aspath);
       } else {
         stats->incr_filtered();
       }
