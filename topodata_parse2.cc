@@ -563,6 +563,40 @@ static vector<string> get_aspath(scamper_trace_t *trace, DestinationChecker *che
   return aspath;
 }
 
+/*
+  - find explicit MPLS tunnels
+  - infer any implicit tunnels
+  - basic question: is path likely to be longer than explicitly revealed?
+*/
+static void analyze_hops(scamper_trace_t *trace, const vector<string> &aspath,
+                         const vector<struct timeval> &rtts) {
+
+  for (int i = 0; i < trace->hop_count; ++i) {
+    scamper_trace_hop_t *hop = trace->hops[i];
+    if (hop != NULL && SCAMPER_TRACE_HOP_IS_ICMP(hop)) {
+      printf(", icmp-type: %d, icmp-code: %d",
+       hop->hop_icmp_type, hop->hop_icmp_code);
+      if(SCAMPER_TRACE_HOP_IS_ICMP_Q(hop)) {
+        printf(", q-ttl: %d, q-len: %d",
+        hop->hop_icmp_q_ttl, hop->hop_icmp_q_ipl);
+      }
+
+      for(auto ie = hop->hop_icmpext; ie != NULL; ie = ie->ie_next) {
+        if(SCAMPER_ICMPEXT_IS_MPLS(ie)) {
+          for(i=0; i<SCAMPER_ICMPEXT_MPLS_COUNT(ie); i++) {
+            uint32_t = SCAMPER_ICMPEXT_MPLS_LABEL(ie, i);
+            printf(", mpls <ttl=%d s=%d exp=%d label=%d>", 
+            SCAMPER_ICMPEXT_MPLS_TTL(ie, i),
+            SCAMPER_ICMPEXT_MPLS_S(ie, i),
+            SCAMPER_ICMPEXT_MPLS_EXP(ie, i), u32);
+          }
+        }
+      }
+    }
+  }
+}
+
+
 static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, TrStats *stats) {
 #if 0
   scamper_trace_pmtud_t *pmtud;
@@ -750,6 +784,7 @@ static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, Tr
       if (checker->check_dest(lasthopaddr, dstip) && trace->hop_count < 64) {
         vector<string> aspath = get_aspath(trace, checker);
         vector<struct timeval> rttvec = extract_rtts(trace);
+        analyze_hops(trace, aspath, rttvec);
         stats->add_troute(trace->hop_count, rttvec, aspath);
       } else {
         stats->incr_filtered();
