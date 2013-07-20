@@ -77,9 +77,6 @@ public:
     }
 
     // cout << hopcount << ' ';
-    int begintrim = i - 1; 
-    int endtrim = j - 1;
-
     int filtered_count = hopcount - (j-1) - (i-1);
     if (filtered_count <= 1) {
         // pass: don't update hopcount with filtered_count;
@@ -92,7 +89,7 @@ public:
         cout << endl;
 #endif
     } else {
-        hopcount - filtered_count;
+        hopcount = filtered_count;
     }
 
 
