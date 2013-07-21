@@ -36,6 +36,29 @@ extern "C" {
 
 using namespace std;
 
+struct MplsInfo {
+  int ttl;
+  int label;
+  int exp;
+  bool eos;
+};
+
+struct HopData {
+  int hop_num; // hop_probe_ttl
+  uint8_t icmp_type;
+  uint8_t icmp_code;
+  uint16_t reply_ipid;
+  struct timeval rtt;
+  string ipaddr;
+  string asn;
+  int quoted_ttl;
+  vector<MplsInfo> labelstack;
+
+  bool ismpls() const {
+    return (labelstack.size() > 0);
+  }
+};
+
 
 class TrStats {
 private:
@@ -46,9 +69,10 @@ private:
   string outname;
   int filtered;
   int included;
+  bool truncate_ends;
 
 public:
-  TrStats(const string &scenario_name, const string &outfile_name) {
+  TrStats(const string &scenario_name, const string &outfile_name, bool trunc_ends) {
     thisname = scenario_name;
     outname = outfile_name;
     hops.clear();
@@ -56,53 +80,43 @@ public:
     aspathlens.clear();
     filtered = 0;
     included = 0;
+    truncate_ends = trunc_ends;
   }
 
   void incr_filtered() { ++filtered; }
 
-
-  void add_troute(int hopcount, const vector<struct timeval> &rttvec, const vector<string> &aspath) {
+  void add_troute(const vector<HopData> &hopdata) {
     ++included;
 
-    // path trimming at each endpoint...
-    int i = 1;
-    while (i < aspath.size() && aspath[i] == aspath[0]) {
-      ++i;
+    int firsthop_index = 0;
+    int lasthop_index = hopdata.size()-1;
+    int hopcount = hopdata[lasthop_index].hop_num;
+
+
+    if (truncate_ends) {
+      // path trimming at each endpoint...
+      int i = 1;
+      while (i < hopdata.size() && hopdata[i].asn == hopdata[0].asn) {
+        ++i;
+      }
+
+      int lastidx = hopdata.size() - 1;
+      int j = 1;
+      while ((lastidx - j > 0) && hopdata[lastidx - j].asn == hopdata[lastidx].asn) {
+        ++j;
+      }
+
+      if (hopcount - (i-1) - (j-1) > 0) { // sanity check
+        firsthop_index = i-1;
+        lasthop_index = lasthop_index - (j-1);
+        hopcount = hopdata[lasthop_index].hop_num - hopdata[firsthop_index].hop_num + 1;
+      }
     }
-
-    int lastidx = aspath.size() - 1;
-    int j = 1;
-    while ((lastidx - j > 0) && aspath[lastidx - j] == aspath[lastidx]) {
-      ++j;
-    }
-
-    // cout << hopcount << ' ';
-    int filtered_count = hopcount - (j-1) - (i-1);
-    if (filtered_count <= 1) {
-        // pass: don't update hopcount with filtered_count;
-        // normally just true if we don't have routeviews prefix->asn data
-#if 0
-        cout << "filtering check: " << hopcount << ' ' << begintrim << ' ' << endtrim << ' ' << filtered_count << " >>>";
-        for (string asn : aspath) {
-            cout << asn << ' ';
-        }
-        cout << endl;
-#endif
-    } else {
-        hopcount = filtered_count;
-    }
-
-
-    // cout << begintrim << ' ' << endtrim << ' ' << hopcount << " aspath: ";
-    //for (auto asn : aspath) {
-    //  cout << asn << ' ';
-    //}
-    //cout << endl;
 
     map<string,int> ases;
-    for (auto asn : aspath) {
-      if (asn != "?") {
-        ases[asn] = 1; 
+    for (auto hd : hopdata) {
+      if (hd.asn != "?") {
+        ases[hd.asn] = 1; 
       }
     }
     int aspathlength = ases.size();
@@ -120,8 +134,7 @@ public:
       hops[hopcount] = 1 + hopit->second;
     }
 
-
-    struct timeval rtt = rttvec[lastidx - (j-1)];
+    struct timeval rtt = hopdata[lasthop_index].rtt;
     ostringstream ostr;
     ostr << rtt.tv_sec << '.' << setw(4) << setfill('0') << (rtt.tv_usec / 100);
     string rttstr = ostr.str();
@@ -131,8 +144,6 @@ public:
     } else {
       rtts[rttstr] = 1 + rttit->second;
     }
-
-    // cout << rtt.tv_sec << '.' << rtt.tv_usec << ' ' << rttstr << ' ' << hopcount << ' ' << hops.size() << endl;
   }
 
   void dump() {
@@ -346,9 +357,14 @@ int main(int argc, char * const *argv) {
   string outfile_name;
   string file_type = "none";
   string thisname = "unknown";
+  bool truncate_ends = false;
 
-  while ((ch = getopt(argc, argv, "ho:r:t:n:")) != -1) {
+  while ((ch = getopt(argc, argv, "cho:r:t:n:")) != -1) {
     switch (ch) {
+      case 'c':
+        truncate_ends = true;
+        break;
+
       case 'n':
         thisname = optarg;
         break;
@@ -385,7 +401,7 @@ int main(int argc, char * const *argv) {
   }
 
   scamper_file_filter_t *filter = init_scamper();
-  TrStats trstats(thisname, outfile_name);
+  TrStats trstats(thisname, outfile_name, truncate_ends);
   process_traceroute(checker, &trstats, file_type, filter);
   trstats.dump();
   return 0;
@@ -529,35 +545,75 @@ static void dump_trace_hop(scamper_trace_hop_t *hop) {
 #endif
 
 
-static vector<struct timeval> extract_rtts(scamper_trace_t *trace) {
-  vector<struct timeval> rttvec;
+static vector<HopData> convert_one_trace(scamper_trace_t *trace, DestinationChecker *checker) {
+  vector<HopData> hop_data;
 
   for (int i = 0; i < trace->hop_count; ++i) {
     scamper_trace_hop_t *hop = trace->hops[i];
     if (hop != NULL) {
-      rttvec.push_back(hop->hop_rtt);
-    }
-  }
-  return rttvec;
-}
+      HopData hd {};
+      hd.hop_num = hop->hop_probe_ttl;
 
-static vector<string> get_aspath(scamper_trace_t *trace, DestinationChecker *checker) {
-  vector<string> aspath;
+      hd.rtt = hop->hop_rtt;
 
-  // cout << trace->hop_count << " ASPath: ";
-  for (int i = 0; i < trace->hop_count; ++i) {
-    scamper_trace_hop_t *hop = trace->hops[i];
-    if (hop != NULL) {
       char addrstr[128];
       scamper_addr_tostr(hop->hop_addr, addrstr, sizeof(addrstr));
-      string asn = checker->get_asn(addrstr);
-      // cout << addrstr << '/' << asn << '/' << static_cast<int>(hop->hop_probe_ttl) << ' ';
-      aspath.push_back(asn);
+      hd.ipaddr = addrstr;
+
+      hd.asn = checker->get_asn(addrstr);
+
+      hd.icmp_type = hop->hop_icmp_type;
+      hd.icmp_code = hop->hop_icmp_code;
+
+      if(SCAMPER_TRACE_HOP_IS_ICMP_Q(hop)) {
+        hd.quoted_ttl = hop->hop_icmp_q_ttl;
+      } else {
+        hd.quoted_ttl = -1;
+      }
+
+      hd.reply_ipid = hop->hop_reply_ipid;
+
+      if (SCAMPER_TRACE_HOP_IS_ICMP(hop)) {
+        for(auto ie = hop->hop_icmpext; ie != NULL; ie = ie->ie_next) {
+          if(SCAMPER_ICMPEXT_IS_MPLS(ie)) {
+            for(int j = 0; j<SCAMPER_ICMPEXT_MPLS_COUNT(ie); j++) {
+              MplsInfo minfo {};
+              minfo.label = SCAMPER_ICMPEXT_MPLS_LABEL(ie, j);
+              minfo.ttl = SCAMPER_ICMPEXT_MPLS_TTL(ie, j);
+              minfo.exp = SCAMPER_ICMPEXT_MPLS_EXP(ie, j);
+              minfo.eos = SCAMPER_ICMPEXT_MPLS_S(ie, j);
+              hd.labelstack.push_back(minfo);
+            }
+          }
+        }
+      }
+      hop_data.push_back(hd);
     }
   }
-  // cout << endl;
 
-  return aspath;
+  return hop_data;
+}
+
+ostream &operator<<(ostream &os, const MplsInfo &minfo) {
+  os << minfo.label << ':' << minfo.ttl << ":0x" << hex << minfo.exp << dec << ':' << minfo.eos;
+  return os;
+}
+
+ostream &operator<<(ostream &os, const HopData &hd) {
+  os << hd.hop_num << ' ' << hd.rtt.tv_sec << '.' << setw(6) << setfill('0') << hd.rtt.tv_usec 
+     << ' ' << hd.ipaddr << ' ' << hd.asn << ' ' 
+     << static_cast<int>(hd.icmp_type) << '/' << static_cast<int>(hd.icmp_code)
+     << ' ' << "0x" << hd.reply_ipid << dec;
+
+  if (hd.quoted_ttl >= 0) {
+    os << " qttl " << hd.quoted_ttl;
+  } 
+
+  for (auto minfo : hd.labelstack) {
+    os << " mpls:" << minfo;
+  }
+
+  return os;
 }
 
 /*
@@ -565,34 +621,54 @@ static vector<string> get_aspath(scamper_trace_t *trace, DestinationChecker *che
   - infer any implicit tunnels
   - basic question: is path likely to be longer than explicitly revealed?
 */
-static void analyze_hops(scamper_trace_t *trace, const vector<string> &aspath,
-                         const vector<struct timeval> &rtts) {
+static bool is_explicit_mpls(const vector<HopData> &hopdata) {
+  for (auto hd : hopdata) {
+    if (hd.ismpls()) {
+      return true;
+    }
+  } 
+  return false;
+}
 
-  for (int i = 0; i < trace->hop_count; ++i) {
-    scamper_trace_hop_t *hop = trace->hops[i];
-    if (hop != NULL && SCAMPER_TRACE_HOP_IS_ICMP(hop)) {
-      printf(", icmp-type: %d, icmp-code: %d",
-       hop->hop_icmp_type, hop->hop_icmp_code);
-      if(SCAMPER_TRACE_HOP_IS_ICMP_Q(hop)) {
-        printf(", q-ttl: %d, q-len: %d",
-        hop->hop_icmp_q_ttl, hop->hop_icmp_q_ipl);
-      }
+static bool is_anomalous_qttl(const vector<HopData> &hopdata) {
+  for (auto hd : hopdata) {
+    if (!hd.ismpls() && (hd.icmp_type == 11 && ((hd.quoted_ttl == 0) || (hd.quoted_ttl > 1)))) {
+      return true;
+    }
+  }
+  return false;
+}
 
-      for(auto ie = hop->hop_icmpext; ie != NULL; ie = ie->ie_next) {
-        if(SCAMPER_ICMPEXT_IS_MPLS(ie)) {
-          for(i=0; i<SCAMPER_ICMPEXT_MPLS_COUNT(ie); i++) {
-            uint32_t = SCAMPER_ICMPEXT_MPLS_LABEL(ie, i);
-            printf(", mpls <ttl=%d s=%d exp=%d label=%d>", 
-            SCAMPER_ICMPEXT_MPLS_TTL(ie, i),
-            SCAMPER_ICMPEXT_MPLS_S(ie, i),
-            SCAMPER_ICMPEXT_MPLS_EXP(ie, i), u32);
-          }
-        }
+static bool is_mpls_qttl_nonincreasing(const vector<HopData> &hopdata) {
+  bool inmpls = false;
+  int lastqttl = 0;
+   
+  for (auto hd: hopdata) {
+    if (hd.ismpls()) {
+      if (!inmpls) {
+        inmpls = true;
+        lastqttl = hd.quoted_ttl;
+      } else {
+        if (hd.quoted_ttl < lastqttl) {
+          return true;
+        } 
+        lastqttl = hd.quoted_ttl;
       }
+    } else {
+      inmpls = false;
+    }
+  }
+  return false;
+}
+
+static void analyze_hops(const vector<HopData> &hopdata) {
+  if (is_mpls_qttl_nonincreasing(hopdata) || is_anomalous_qttl(hopdata)) {
+    cout << "trace " << hopdata.size() << endl;
+    for (auto hd : hopdata) {
+      cout << '\t' << hd << endl;
     }
   }
 }
-
 
 static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, TrStats *stats) {
 #if 0
@@ -779,10 +855,9 @@ static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, Tr
       scamper_addr_tostr(hop->hop_addr, lasthopaddr, sizeof(lasthopaddr));
 
       if (checker->check_dest(lasthopaddr, dstip) && trace->hop_count < 64) {
-        vector<string> aspath = get_aspath(trace, checker);
-        vector<struct timeval> rttvec = extract_rtts(trace);
-        analyze_hops(trace, aspath, rttvec);
-        stats->add_troute(trace->hop_count, rttvec, aspath);
+        vector<HopData> hopdata = convert_one_trace(trace, checker);
+        // analyze_hops(hopdata);
+        stats->add_troute(hopdata);
       } else {
         stats->incr_filtered();
       }
