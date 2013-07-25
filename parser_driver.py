@@ -118,6 +118,19 @@ def date_out_of_range(year, month, daterange):
         return True
     return False
 
+def get_dnsfiles(year, month):
+    dnsfiles = []
+    pat = re.compile("^dns-names.l7.(\d{4})(\d{2})\d{2}.txt.gz$")
+    # dns-names.l7.20130404.txt.gz
+    for fname in os.listdir('../arkdns/{:04d}'.format(year)):
+        mobj = re.match(pat, fname)
+        if mobj:
+            y = int(mobj.groups()[0])
+            m = int(mobj.groups()[1])
+            if y == year and m == month:
+                dnsfiles.append("../arkdns/{:04d}/{}".format(year,fname))
+    return dnsfiles
+
 def get_routeviews(year, month):
     if date_out_of_range(year, month, routeviews_range):
         return ''
@@ -126,7 +139,6 @@ def get_routeviews(year, month):
             # just looking for one particular file
             return '../routeviews/{:04d}/{:02d}/{}'.format(year, month, fname)
     return ''
-
 
 def post_process(outbase, y, m, input_file):
     infile = open(input_file)
@@ -155,6 +167,7 @@ def post_process(outbase, y, m, input_file):
 
 def main():
     parser = optparse.OptionParser()
+    parser.add_option("-c", "--truncate", dest="dotrunc", default=False, action="store_true")
     parser.add_option("-o", "--outbase", default="hopsrtts", dest="outbase")
     parser.add_option("-y", "--year", type="int", default=0, dest="year")
     parser.add_option("-m", "--month", type="int", default=0, dest="month")
@@ -171,14 +184,29 @@ def main():
             outfile_name = '{}_{:04d}{:02d}_pre.txt'.format(options.outbase, year, month)
             filelist = get_files(year, month)
             routeviews = get_routeviews(year, month)
+            dnsfiles = get_dnsfiles(year, month)
 
             remaining = len(filelist)
             print "Doing",outfile_name,">>>",
             for xfile,xtype in filelist:
                 if routeviews:
                     cmdline = 'gzip -dc {} | ./topodata_parse2 -t {} -r {} -o {} -n {}'.format(xfile, xtype, routeviews, outfile_name, xfile)
+                    if options.dotrunc:
+                        cmdline = 'gzip -dc {} | ./topodata_parse2 -c -t {} -r {} -o {} -n {}'.format(xfile, xtype, routeviews, outfile_name, xfile)
+                    else:
+                        cmdline = 'gzip -dc {} | ./topodata_parse2 -t {} -r {} -o {} -n {}'.format(xfile, xtype, routeviews, outfile_name, xfile)
                 else:
-                    cmdline = 'gzip -dc {} | ./topodata_parse2 -t {} -o {} -n {}'.format(xfile, xtype, outfile_name, xfile)
+                    if options.dotrunc:
+                        cmdline = 'gzip -dc {} | ./topodata_parse2 -c -t {} -o {} -n {}'.format(xfile, xtype, outfile_name, xfile)
+                    else:
+                        cmdline = 'gzip -dc {} | ./topodata_parse2 -t {} -o {} -n {}'.format(xfile, xtype, outfile_name, xfile)
+
+                # add on DNS entry files, if available
+                for dnsinp in dnsfiles:
+                    cmdline += " -d {}".format(dnsinp)
+
+                print cmdline
+
                 print remaining,
                 sys.stdout.flush()
                 p = subprocess.Popen(cmdline, shell=True)
