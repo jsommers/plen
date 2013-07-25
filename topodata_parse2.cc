@@ -50,6 +50,7 @@ struct HopData {
   uint16_t reply_ipid;
   struct timeval rtt;
   string ipaddr;
+  string dns;
   string asn;
   int quoted_ttl;
   vector<MplsInfo> labelstack;
@@ -321,7 +322,7 @@ void process_fn(prefix_t *pfx, void *data) {
 }
 
 void usage(const char *progname) {
-  cerr << "Usage: " << progname << " -t <warts|arts> -n scenario_name -o outfilename -r routeviews_file" << endl;
+  cerr << "Usage: " << progname << " -t <warts|arts> -n scenario_name -o outfilename -d dnsmapping -r routeviews_file" << endl;
   exit(0);
 }
 
@@ -349,20 +350,73 @@ scamper_file_filter_t *init_scamper(void) {
   return filter;
 }
 
-void process_traceroute(DestinationChecker *, TrStats *, const string &, scamper_file_filter_t *);
+
+class DnsMapper {
+public:
+  virtual ~DnsMapper() {}
+
+  virtual string map_dns(const char *ipaddr) const {
+    return string("-");
+  };
+};
+
+class CaidaDnsMapper : public DnsMapper {
+public:
+  CaidaDnsMapper(const vector<string> &dns_filelist) {
+    for (string dns_file : dns_filelist) {
+      cerr << "Loading DNS file " << dns_file << endl;
+      gzFile gzf = gzopen(dns_file.c_str(), "r");
+      char buffer[1024];
+      while (gzgets(gzf, buffer, 1024) != NULL) {
+        char *tmpbuf = &buffer[0];
+        char *timestamp = strsep(&tmpbuf, "\t\n ");
+        char *ipaddr = strsep(&tmpbuf, "\t\n ");
+        char *dnsname = strsep(&tmpbuf, "\t\n ");
+        if (timestamp != NULL && ipaddr != NULL && dnsname != NULL) {
+          ipdns_mappings[ipaddr] = dnsname;
+        }    
+      }
+      gzclose(gzf);
+    }
+  }  
+
+  virtual string map_dns(const char *ipaddr) const {
+    string ipstr {ipaddr};
+    auto iter = ipdns_mappings.find(ipstr);
+    return iter == ipdns_mappings.end() ? string() : iter->second;
+  }
+
+private:
+  map<string,string> ipdns_mappings;
+};
+
+
+DnsMapper *load_dns_mapper(const vector<string> &dns_filelist) {
+  if (dns_filelist.size() == 0) {
+    return new DnsMapper();
+  }
+  return new CaidaDnsMapper(dns_filelist);
+}
+
+void process_traceroute(DestinationChecker *, DnsMapper *, TrStats *, const string &, scamper_file_filter_t *);
 
 int main(int argc, char * const *argv) {
   int ch = 0;
   const char *routeviews_file = nullptr;
+  vector<string> dnsfiles;
   string outfile_name;
   string file_type = "none";
   string thisname = "unknown";
   bool truncate_ends = false;
 
-  while ((ch = getopt(argc, argv, "cho:r:t:n:")) != -1) {
+  while ((ch = getopt(argc, argv, "cd:ho:r:t:n:")) != -1) {
     switch (ch) {
       case 'c':
         truncate_ends = true;
+        break;
+
+      case 'd':
+        dnsfiles.push_back(string(optarg));
         break;
 
       case 'n':
@@ -393,6 +447,8 @@ int main(int argc, char * const *argv) {
     exit(0);
   }
 
+  DnsMapper *dnsmapper = load_dns_mapper(dnsfiles);
+
   DestinationChecker *checker = nullptr;
   if (routeviews_file != nullptr) {
     checker = new RouteviewsDestinationChecker(routeviews_file);
@@ -402,150 +458,13 @@ int main(int argc, char * const *argv) {
 
   scamper_file_filter_t *filter = init_scamper();
   TrStats trstats(thisname, outfile_name, truncate_ends);
-  process_traceroute(checker, &trstats, file_type, filter);
+  process_traceroute(checker, dnsmapper, &trstats, file_type, filter);
   trstats.dump();
+  delete dnsmapper;
   return 0;
 }
 
-#if 0
-static void dump_list_summary(scamper_list_t *list)
-{
-  if(list != NULL)
-    {
-      printf(" list id: %d ", list->id);
-      if(list->name != NULL)
-  printf("name: %s ", list->name);
-      if(list->monitor != NULL)
-  printf("monitor: %s ", list->monitor);
-      printf("\n");
-    }
-  return;
-}
-
-static void dump_cycle_summary(scamper_cycle_t *cycle)
-{
-  if(cycle != NULL)
-    printf(" cycle id: %d,", cycle->id);
-  return;
-}
-
-static void dump_tcp_flags(uint8_t flags)
-{
-  if(flags != 0)
-    {
-      printf(" (%s%s%s%s%s%s%s%s )",
-       (flags & 0x01) ? " fin" : "",
-       (flags & 0x02) ? " syn" : "",
-       (flags & 0x04) ? " rst" : "",
-       (flags & 0x08) ? " psh" : "",
-       (flags & 0x10) ? " ack" : "",
-       (flags & 0x20) ? " urg" : "",
-       (flags & 0x40) ? " ece" : "",
-       (flags & 0x80) ? " cwr" : "");
-    }
-  return;
-}
-
-static void dump_timeval(const char *label, struct timeval *start)
-{
-  time_t tt = start->tv_sec;
-  char buf[32];
-  memcpy(buf, ctime(&tt), 24); buf[24] = '\0';
-  printf(" %s: %s %06d ", label, buf, (int)start->tv_usec);
-  return;
-}
-
-static void dump_trace_hop(scamper_trace_hop_t *hop) {
-  scamper_icmpext_t *ie;
-  uint32_t u32;
-  char addr[256];
-  int i;
-
-  printf(" %2d, %s",
-   hop->hop_probe_ttl,
-   scamper_addr_tostr(hop->hop_addr, addr, sizeof(addr)));
-
-  printf(", attempt: %d, rtt: %d.%06ds, probe-size: %d",
-   hop->hop_probe_id,
-   (int)hop->hop_rtt.tv_sec, (int)hop->hop_rtt.tv_usec,
-   hop->hop_probe_size);
-
-  printf(", reply-size: %d", hop->hop_reply_size);
-  if(hop->hop_flags & SCAMPER_TRACE_HOP_FLAG_REPLY_TTL)
-    printf(", reply-ttl: %d", hop->hop_reply_ttl);
-  if(hop->hop_addr->type == SCAMPER_ADDR_TYPE_IPV4)
-    printf(", reply-ipid: 0x%04x, reply-tos 0x%02x",
-     hop->hop_reply_ipid, hop->hop_reply_tos);
-  // printf("\n");
-
-  if(SCAMPER_TRACE_HOP_IS_ICMP(hop))
-    {
-      printf(", icmp-type: %d, icmp-code: %d",
-       hop->hop_icmp_type, hop->hop_icmp_code);
-      if(SCAMPER_TRACE_HOP_IS_ICMP_Q(hop))
-  {
-    printf(", q-ttl: %d, q-len: %d",
-     hop->hop_icmp_q_ttl, hop->hop_icmp_q_ipl);
-    if(hop->hop_addr->type == SCAMPER_ADDR_TYPE_IPV4)
-      printf(", q-tos %d", hop->hop_icmp_q_tos);
-  }
-      if(SCAMPER_TRACE_HOP_IS_ICMP_PTB(hop))
-  printf(", nhmtu: %d", hop->hop_icmp_nhmtu);
-    }
-  else
-    {
-      printf(", tcp-flags: 0x%02x", hop->hop_tcp_flags);
-      dump_tcp_flags(hop->hop_tcp_flags);
-    }
-  //printf("\n");
-
-  printf(", flags: 0x%02x", hop->hop_flags);
-  if(hop->hop_flags != 0)
-    {
-      printf(" (");
-      if(hop->hop_flags & SCAMPER_TRACE_HOP_FLAG_TS_SOCK_RX)
-  printf(" sockrxts");
-      if(hop->hop_flags & SCAMPER_TRACE_HOP_FLAG_TS_DL_TX)
-  printf(" dltxts");
-      if(hop->hop_flags & SCAMPER_TRACE_HOP_FLAG_TS_DL_RX)
-  printf(" dlrxts");
-      if(hop->hop_flags & SCAMPER_TRACE_HOP_FLAG_TS_TSC)
-  printf(" tscrtt");
-      if(hop->hop_flags & SCAMPER_TRACE_HOP_FLAG_REPLY_TTL)
-  printf(" replyttl");
-      printf(" )");
-    }
-  // printf("\n");
-
-  for(ie = hop->hop_icmpext; ie != NULL; ie = ie->ie_next)
-    {
-      if(SCAMPER_ICMPEXT_IS_MPLS(ie))
-  {
-    for(i=0; i<SCAMPER_ICMPEXT_MPLS_COUNT(ie); i++)
-      {
-        u32 = SCAMPER_ICMPEXT_MPLS_LABEL(ie, i);
-        printf(", mpls <ttl=%d s=%d exp=%d label=%d>", 
-         SCAMPER_ICMPEXT_MPLS_TTL(ie, i),
-         SCAMPER_ICMPEXT_MPLS_S(ie, i),
-         SCAMPER_ICMPEXT_MPLS_EXP(ie, i), u32);
-        /*
-        printf(", %9s ttl: %d, s: %d, exp: %d, label: %d\n",
-         (i == 0) ? "mpls ext" : "",
-         SCAMPER_ICMPEXT_MPLS_TTL(ie, i),
-         SCAMPER_ICMPEXT_MPLS_S(ie, i),
-         SCAMPER_ICMPEXT_MPLS_EXP(ie, i), u32);
-         */
-      }
-  }
-    }
-
-  printf ("\n");
-  return;
-}
-#endif
-
-
-static vector<HopData> convert_one_trace(scamper_trace_t *trace, DestinationChecker *checker) {
+static vector<HopData> convert_one_trace(scamper_trace_t *trace, DestinationChecker *checker, DnsMapper *dnsmapper) {
   vector<HopData> hop_data;
 
   for (int i = 0; i < trace->hop_count; ++i) {
@@ -561,6 +480,7 @@ static vector<HopData> convert_one_trace(scamper_trace_t *trace, DestinationChec
       hd.ipaddr = addrstr;
 
       hd.asn = checker->get_asn(addrstr);
+      hd.dns = dnsmapper->map_dns(addrstr);
 
       hd.icmp_type = hop->hop_icmp_type;
       hd.icmp_code = hop->hop_icmp_code;
@@ -601,7 +521,7 @@ ostream &operator<<(ostream &os, const MplsInfo &minfo) {
 
 ostream &operator<<(ostream &os, const HopData &hd) {
   os << hd.hop_num << ' ' << hd.rtt.tv_sec << '.' << setw(6) << setfill('0') << hd.rtt.tv_usec 
-     << ' ' << hd.ipaddr << ' ' << hd.asn << ' ' 
+     << ' ' << hd.ipaddr << ' ' << hd.asn << ' ' << hd.dns << ' ' 
      << static_cast<int>(hd.icmp_type) << '/' << static_cast<int>(hd.icmp_code)
      << ' ' << "0x" << hd.reply_ipid << dec;
 
@@ -670,16 +590,7 @@ static void analyze_hops(const vector<HopData> &hopdata) {
   }
 }
 
-static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, TrStats *stats) {
-#if 0
-  scamper_trace_pmtud_t *pmtud;
-  scamper_trace_pmtud_n_t *n;
-  uint16_t i;
-  uint8_t u8;
-  char buf[256];
-#endif
-
-
+static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, DnsMapper *dnsmapper, TrStats *stats) {
   char srcip[128];
   char dstip[128];
   if(trace->src != NULL) {
@@ -693,160 +604,6 @@ static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, Tr
     return;
   }
 
-#if 0
-  dump_list_summary(trace->list);
-  dump_cycle_summary(trace->cycle);
-  printf(" user-id: %d ", trace->userid);
-  dump_timeval("start", &trace->start);
-
-  printf(" type: ");
-  switch(trace->type)
-    {
-    case SCAMPER_TRACE_TYPE_ICMP_ECHO:
-      printf("icmp, echo id: %d ", trace->sport);
-      break;
-
-    case SCAMPER_TRACE_TYPE_ICMP_ECHO_PARIS:
-      /*
-       * if the byte ordering of the trace->sport used in the icmp csum
-       * is unknown -- that is, not known to be correct, print that detail
-       */
-      printf("icmp paris, echo id: %d ", trace->sport);
-      if(SCAMPER_TRACE_IS_ICMPCSUMDP(trace))
-  printf(", csum: 0x%04x", trace->dport);
-      break;
-
-    case SCAMPER_TRACE_TYPE_UDP:
-      printf("udp, sport: %d, base dport: %d ",
-       trace->sport, trace->dport);
-      break;
-
-    case SCAMPER_TRACE_TYPE_UDP_PARIS:
-      printf("udp paris, sport: %d, dport: %d ",
-       trace->sport, trace->dport);
-      break;
-
-    case SCAMPER_TRACE_TYPE_TCP:
-      printf("tcp, sport: %d, dport: %d ", trace->sport, trace->dport);
-      break;
-
-    case SCAMPER_TRACE_TYPE_TCP_ACK:
-      printf("tcp-ack, sport: %d, dport: %d ",
-       trace->sport, trace->dport);
-      break;
-
-    default:
-      printf("%d ", trace->type);
-      break;
-    }
-  if(trace->offset != 0)
-    printf(", offset %d ", trace->offset);
-  printf("\n");
-
-  if(trace->dtree != NULL)
-    {
-      printf(" doubletree firsthop: %d ", trace->dtree->firsthop);
-      if(trace->dtree->lss != NULL)
-  printf(", lss-name: %s ", trace->dtree->lss);
-      if(trace->dtree->lss_stop != NULL)
-  printf(", lss-stop: %s ",
-         scamper_addr_tostr(trace->dtree->lss_stop, buf, sizeof(buf)));
-      if(trace->dtree->gss_stop != NULL)
-  printf(", gss-stop: %s ",
-         scamper_addr_tostr(trace->dtree->gss_stop, buf, sizeof(buf)));
-      printf("\n");
-    }
-
-  printf(" attempts: %d, hoplimit: %d, loops: %d, probec: %d\n",
-   trace->attempts, trace->hoplimit, trace->loops, trace->probec);
-  printf(" gaplimit: %d, gapaction: ", trace->gaplimit);
-  if(trace->gapaction == SCAMPER_TRACE_GAPACTION_STOP)
-    printf("stop");
-  else if(trace->gapaction == SCAMPER_TRACE_GAPACTION_LASTDITCH)
-    printf("lastditch");
-  else
-    printf("0x%02x", trace->gapaction);
-  printf("\n");
-
-  printf(" wait-timeout: %ds", trace->wait);
-  if(trace->wait_probe != 0)
-    printf(", wait-probe: %dms", trace->wait_probe * 10);
-  if(trace->confidence != 0)
-    printf(", confidence: %d%%", trace->confidence);
-  printf("\n");
-
-  printf(" flags: 0x%02x", trace->flags);
-  if(trace->flags != 0)
-    {
-      printf(" (");
-      if(trace->flags & SCAMPER_TRACE_FLAG_ALLATTEMPTS)
-  printf(" all-attempts");
-      if(trace->flags & SCAMPER_TRACE_FLAG_PMTUD)
-  printf(" pmtud");
-      if(trace->flags & SCAMPER_TRACE_FLAG_DL)
-  printf(" dltxts");
-      if(trace->flags & SCAMPER_TRACE_FLAG_IGNORETTLDST)
-  printf(" ignorettldst");
-      if(trace->flags & SCAMPER_TRACE_FLAG_DOUBLETREE)
-  printf(" doubletree");
-      if(trace->flags & SCAMPER_TRACE_FLAG_ICMPCSUMDP)
-  printf(" icmp-csum-dport");
-      printf(" )");
-    }
-  printf("\n");
-#endif
-
-#if 0
-  printf(" stop reason: ");
-  switch(trace->stop_reason)
-    {
-    case SCAMPER_TRACE_STOP_NONE:
-      printf("none");
-      break;
-
-    case SCAMPER_TRACE_STOP_COMPLETED:
-      printf("done");
-      break;
-
-    case SCAMPER_TRACE_STOP_UNREACH:
-      printf("icmp unreach %d", trace->stop_data);
-      break;
-
-    case SCAMPER_TRACE_STOP_ICMP:
-      printf("icmp type %d", trace->stop_data);
-      break;
-
-    case SCAMPER_TRACE_STOP_LOOP:
-      printf("loop");
-      break;
-
-    case SCAMPER_TRACE_STOP_GAPLIMIT:
-      printf("gaplimit");
-      break;
-
-    case SCAMPER_TRACE_STOP_ERROR:
-      printf("errno %d", trace->stop_data);
-      break;
-
-    case SCAMPER_TRACE_STOP_HOPLIMIT:
-      printf("hoplimit");
-      break;
-
-    case SCAMPER_TRACE_STOP_GSS:
-      printf("dtree-gss");
-      break;
-
-    case SCAMPER_TRACE_STOP_HALTED:
-      printf("halted");
-      break;
-
-    default:
-      printf("reason 0x%02x data 0x%02x",trace->stop_reason,trace->stop_data);
-      break;
-    }
-  printf("\n");
-#endif
-
   bool nullhops = false;
   if (trace->hop_count > 0) {
     scamper_trace_hop_t *hop = trace->hops[trace->hop_count - 1];
@@ -855,8 +612,8 @@ static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, Tr
       scamper_addr_tostr(hop->hop_addr, lasthopaddr, sizeof(lasthopaddr));
 
       if (checker->check_dest(lasthopaddr, dstip) && trace->hop_count < 64) {
-        vector<HopData> hopdata = convert_one_trace(trace, checker);
-        // analyze_hops(hopdata);
+        vector<HopData> hopdata = convert_one_trace(trace, checker, dnsmapper);
+        analyze_hops(hopdata);
         stats->add_troute(hopdata);
       } else {
         stats->incr_filtered();
@@ -866,59 +623,6 @@ static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, Tr
       nullhops = true;
     }
   }
-
-#if 0
-  for(i=0; i < trace->hop_count; i++) {
-    for(hop = trace->hops[i]; hop != NULL; hop = hop->hop_next) {
-
-      dump_trace_hop(hop);
-
-    }
-  }
-
-  /* dump any last-ditch probing hops */
-  for(hop = trace->lastditch; hop != NULL; hop = hop->hop_next) {
-    dump_trace_hop(hop);
-  }
-#endif
-
-#if 0
-  if((pmtud = trace->pmtud) != NULL)
-    {
-      printf("pmtud: ver %d ifmtu %d, pmtu %d", pmtud->ver, pmtud->ifmtu,
-       pmtud->pmtu);
-      if(pmtud->outmtu != 0)
-  printf(", outmtu %d", pmtud->outmtu);
-      if(pmtud->notec != 0)
-  printf(", notec %d", pmtud->notec);
-      printf("\n");
-      for(u8=0; u8<pmtud->notec; u8++)
-  {
-    n = pmtud->notes[u8];
-    hop = n->hop;
-    printf(" note %d: nhmtu %d, ", u8, n->nhmtu);
-
-    if(hop != NULL)
-      scamper_addr_tostr(hop->hop_addr, buf, sizeof(buf));
-    else
-      buf[0] = '\0';
-
-    if(n->type == SCAMPER_TRACE_PMTUD_N_TYPE_PTB)
-      printf("ptb %s", buf);
-    else if(n->type == SCAMPER_TRACE_PMTUD_N_TYPE_PTB_BAD && hop != NULL)
-      printf("ptb-bad %s mtu %d", buf, hop->hop_icmp_nhmtu);
-    else if(n->type == SCAMPER_TRACE_PMTUD_N_TYPE_SILENCE)
-      printf("silence > ttl %d", hop != NULL ? hop->hop_probe_ttl : 0);
-    else
-      printf("type-%d", n->type);
-    printf("\n");
-  }
-      for(hop = trace->pmtud->hops; hop != NULL; hop = hop->hop_next)
-  dump_trace_hop(hop);
-    }
-
-  printf("\n");
-#endif
 
   if (!nullhops) {
     try {
@@ -932,7 +636,8 @@ static void handle_trace(scamper_trace_t *trace, DestinationChecker *checker, Tr
 }
 
 
-void process_traceroute(DestinationChecker *checker, TrStats *trstats, const string &filetype, scamper_file_filter_t *filter) {
+void process_traceroute(DestinationChecker *checker, DnsMapper *dnsmapper, TrStats *trstats, 
+                        const string &filetype, scamper_file_filter_t *filter) {
   scamper_file_t *infile;
   char filename[] = "-";
   infile = scamper_file_openfd(STDIN_FILENO, filename, 'r', const_cast<char *>(filetype.c_str()));
@@ -955,7 +660,7 @@ void process_traceroute(DestinationChecker *checker, TrStats *trstats, const str
         {
           try {
             scamper_trace_t *trace = reinterpret_cast<scamper_trace_t*>(data);
-            handle_trace(trace, checker, trstats);
+            handle_trace(trace, checker, dnsmapper, trstats);
           } 
           catch (...) {
             cout << "Error/exception reading trace object" << endl;

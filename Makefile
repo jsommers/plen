@@ -1,6 +1,6 @@
 CXX = clang++
 CC = clang
-CXXFLAGS = -Wall -O2 -std=c++11 
+CXXFLAGS = -Wall -O2 -std=c++11 -stdlib=libstdc++
 CCFLAGS = -Wall -O2 
 INCLUDES = -I. -I./scamper-cvs-20111202c/scamper
 LIBS = -lz  -lscamperfile
